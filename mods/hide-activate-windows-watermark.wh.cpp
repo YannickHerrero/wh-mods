@@ -2,7 +2,7 @@
 // @id              hide-activate-windows-watermark
 // @name            Hide Activate Windows Watermark
 // @description     Hides the "Activate Windows" desktop watermark
-// @version         1.10.0
+// @version         1.11.0
 // @author          yh
 // @include         explorer.exe
 // @architecture    x86-64
@@ -68,6 +68,48 @@ static bool IsWatermarkText(PCWSTR text, int len)
     return false;
 }
 
+// Resolve a code address to module + nearest preceding symbol.
+static void LogCaller(void* addr, PCWSTR tag)
+{
+    HMODULE hmod = nullptr;
+    if (!GetModuleHandleExW(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            (LPCWSTR)addr, &hmod) ||
+        !hmod)
+    {
+        Wh_Log(L"%s caller: unknown module at %p", tag, addr);
+        return;
+    }
+    WCHAR path[MAX_PATH] = {0};
+    GetModuleFileNameW(hmod, path, MAX_PATH);
+    ULONG_PTR rva = (ULONG_PTR)addr - (ULONG_PTR)hmod;
+
+    WCHAR bestName[512] = {0};
+    ULONG_PTR bestDelta = (ULONG_PTR)-1;
+    WH_FIND_SYMBOL sym;
+    HANDLE h = Wh_FindFirstSymbol(hmod, nullptr, &sym);
+    if (h)
+    {
+        do
+        {
+            ULONG_PTR symAddr = (ULONG_PTR)sym.address;
+            if (sym.symbol && symAddr && symAddr <= (ULONG_PTR)addr)
+            {
+                ULONG_PTR delta = (ULONG_PTR)addr - symAddr;
+                if (delta < bestDelta)
+                {
+                    bestDelta = delta;
+                    lstrcpynW(bestName, sym.symbol, 512);
+                }
+            }
+        } while (Wh_FindNextSymbol(h, &sym));
+        Wh_FindCloseSymbol(h);
+    }
+    Wh_Log(L"%s caller: %s +0x%p (module %s, rva 0x%p)", tag, bestName,
+           (void*)bestDelta, path, (void*)rva);
+}
+
 static bool DropIfWatermark(PCWSTR fn, PCWSTR text, int len)
 {
     if (!IsWatermarkText(text, len))
@@ -121,12 +163,27 @@ int WINAPI DrawTextW_hook(HDC hdc, LPCWSTR text, int cch, LPRECT rc, UINT fmt)
     return DrawTextW_orig(hdc, text, cch, rc, fmt);
 }
 
+int g_drawDiagLeft = 4;
+
 using DrawTextExW_t = int(WINAPI*)(HDC, LPWSTR, int, LPRECT, UINT, LPDRAWTEXTPARAMS);
 DrawTextExW_t DrawTextExW_orig;
 int WINAPI DrawTextExW_hook(HDC hdc, LPWSTR text, int cch, LPRECT rc, UINT fmt,
                             LPDRAWTEXTPARAMS dtp)
 {
-    if (ShouldSuppressDraw(L"DrawTextExW", text, cch, fmt, rc))
+    bool suppress = ShouldSuppressDraw(L"DrawTextExW", text, cch, fmt, rc);
+    if (suppress && g_drawDiagLeft > 0)
+    {
+        g_drawDiagLeft--;
+        DWORD objType = GetObjectType(hdc);  // OBJ_DC=3, OBJ_MEMDC=10
+        HWND hwnd = WindowFromDC(hdc);
+        WCHAR cls[128] = {0};
+        if (hwnd)
+            GetClassNameW(hwnd, cls, ARRAYSIZE(cls));
+        Wh_Log(L"  DrawTextExW target: hdc=%p objType=%lu hwnd=%p class=%s",
+               hdc, objType, hwnd, cls);
+        LogCaller(__builtin_return_address(0), L"  DrawTextExW");
+    }
+    if (suppress)
         return 0;
     return DrawTextExW_orig(hdc, text, cch, rc, fmt, dtp);
 }
