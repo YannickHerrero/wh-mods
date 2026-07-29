@@ -44,7 +44,6 @@ press F5).
 // ==/WindhawkModReadme==
 
 #include <windhawk_utils.h>
-#include <intrin.h>
 
 // Resolve a code address to its module + nearest preceding symbol, so we can
 // see who called into us. Expensive (enumerates a module's symbols), so it is
@@ -154,7 +153,7 @@ bool __cdecl DoesDesktopHaveWatermarkText_hook(void)
     if (g_gateCallerLogsLeft > 0)
     {
         g_gateCallerLogsLeft--;
-        LogCaller(_ReturnAddress(), L"DoesDesktopHaveWatermarkText");
+        LogCaller(__builtin_return_address(0), L"DoesDesktopHaveWatermarkText");
     }
     return false;
 }
