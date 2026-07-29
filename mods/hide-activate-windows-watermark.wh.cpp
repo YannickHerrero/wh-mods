@@ -2,7 +2,7 @@
 // @id              hide-activate-windows-watermark
 // @name            Hide Activate Windows Watermark
 // @description     Hides the "Activate Windows" desktop watermark
-// @version         1.11.1
+// @version         1.12.0
 // @author          yh
 // @include         explorer.exe
 // @architecture    x86-64
@@ -142,15 +142,19 @@ void __cdecl CWallpaperRenderer_PaintMonitor_hook(
 // Log a watermark DrawText* call with its flags/rect. Returns true if this is
 // a real draw that should be suppressed; false if it's a measurement pass
 // (DT_CALCRECT) that must run normally.
+int g_suppressLogLeft = 8;
+
 static bool ShouldSuppressDraw(PCWSTR fn, PCWSTR text, int len, UINT fmt, LPRECT rc)
 {
     if (!IsWatermarkText(text, len))
         return false;
     bool calc = (fmt & DT_CALCRECT) != 0;
-    Wh_Log(L"%s watermark: fmt=0x%08X%s rect=(%ld,%ld,%ld,%ld) text=\"%s\"",
-           fn, fmt, calc ? L" [CALCRECT/measure]" : L" [DRAW -> suppressed]",
-           rc ? rc->left : 0, rc ? rc->top : 0, rc ? rc->right : 0,
-           rc ? rc->bottom : 0, text);
+    if (g_suppressLogLeft > 0)
+    {
+        g_suppressLogLeft--;
+        Wh_Log(L"%s watermark: fmt=0x%08X%s text=\"%s\"", fn, fmt,
+               calc ? L" [CALCRECT/measure]" : L" [DRAW -> suppressed]", text);
+    }
     return !calc;
 }
 
@@ -312,6 +316,42 @@ static BOOL CALLBACK EnumTopProc(HWND hwnd, LPARAM)
     return TRUE;
 }
 
+// Dump a module's symbols whose name contains any of the given keywords.
+static void DumpModuleSymbols(HMODULE mod, PCWSTR name,
+                             const wchar_t* const* keys, int nkeys)
+{
+    Wh_Log(L"--- Dumping %s symbols (watermark/license/genuine) ---", name);
+    if (!mod)
+    {
+        Wh_Log(L"  module not loaded");
+        return;
+    }
+    WH_FIND_SYMBOL sym;
+    HANDLE h = Wh_FindFirstSymbol(mod, nullptr, &sym);
+    if (!h)
+    {
+        Wh_Log(L"  Wh_FindFirstSymbol failed (symbols unavailable?)");
+        return;
+    }
+    int count = 0;
+    do
+    {
+        if (!sym.symbol)
+            continue;
+        for (int k = 0; k < nkeys; k++)
+        {
+            if (wcsstr(sym.symbol, keys[k]))
+            {
+                Wh_Log(L"  SYM: %s", sym.symbol);
+                count++;
+                break;
+            }
+        }
+    } while (Wh_FindNextSymbol(h, &sym));
+    Wh_FindCloseSymbol(h);
+    Wh_Log(L"--- %s: %d matching symbol(s) ---", name, count);
+}
+
 // ---- Init ---------------------------------------------------------------
 
 static BOOL HookOne(HMODULE mod, PCWSTR label,
@@ -375,9 +415,16 @@ BOOL Wh_ModInit(void)
                          L"SHLoadIndirectString", (void*)SHLoadIndirectString_hook,
                          (void**)&SHLoadIndirectString_orig);
 
-    Wh_Log(L"Enumerating windows for watermark text...");
     EnumWindows(EnumTopProc, 0);
-    Wh_Log(L"Window enumeration done");
+
+    // Reconnaissance: find the watermark owner in twinui.pcshell.dll.
+    HMODULE hTwinui = LoadLibraryW(L"twinui.pcshell.dll");
+    static const wchar_t* const twinuiKeys[] = {
+        L"Watermark", L"Genuine", L"License", L"Licens",
+        L"Notification", L"Unactivated", L"Eval", L"Spp", L"Slc", L"Nag",
+    };
+    DumpModuleSymbols(hTwinui, L"twinui.pcshell.dll", twinuiKeys,
+                      ARRAYSIZE(twinuiKeys));
 
     Wh_Log(L"Installed %d/10 hooks", hooked);
 
