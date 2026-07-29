@@ -12,7 +12,7 @@
 /*
 # Hide Activate Windows Watermark
 
-Hides the "Activate Windows — Go to Settings to activate Windows" watermark that
+Hides the "Activate Windows - Go to Settings to activate Windows" watermark that
 Windows draws in the bottom-right of the desktop on unactivated installs.
 
 On current Windows 11 (e.g. 23H2 / build 22631) the watermark text is rendered
@@ -24,10 +24,10 @@ layout code doesn't misbehave.
 The match is on the English watermark text; on a non-English Windows the phrase
 in `IsWatermarkText` below would need to be adjusted.
 
-**Note:** This only hides the on-screen notice — it does not activate Windows.
+**Note:** This only hides the on-screen notice - it does not activate Windows.
 
-To apply it, enable the mod and restart Windows Explorer (Task Manager →
-*Windows Explorer* → Restart) so the desktop is composed with the mod active.
+To apply it, enable the mod and restart Windows Explorer (Task Manager ->
+*Windows Explorer* -> Restart) so the desktop is composed with the mod active.
 */
 // ==/WindhawkModReadme==
 
