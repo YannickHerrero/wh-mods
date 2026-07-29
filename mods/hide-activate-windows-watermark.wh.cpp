@@ -2,7 +2,7 @@
 // @id              hide-activate-windows-watermark
 // @name            Hide Activate Windows Watermark
 // @description     Hides the "Activate Windows" desktop watermark
-// @version         1.9.0
+// @version         1.10.0
 // @author          yh
 // @include         explorer.exe
 // @architecture    x86-64
@@ -97,11 +97,26 @@ void __cdecl CWallpaperRenderer_PaintMonitor_hook(
 
 // ---- GDI text functions -------------------------------------------------
 
+// Log a watermark DrawText* call with its flags/rect. Returns true if this is
+// a real draw that should be suppressed; false if it's a measurement pass
+// (DT_CALCRECT) that must run normally.
+static bool ShouldSuppressDraw(PCWSTR fn, PCWSTR text, int len, UINT fmt, LPRECT rc)
+{
+    if (!IsWatermarkText(text, len))
+        return false;
+    bool calc = (fmt & DT_CALCRECT) != 0;
+    Wh_Log(L"%s watermark: fmt=0x%08X%s rect=(%ld,%ld,%ld,%ld) text=\"%s\"",
+           fn, fmt, calc ? L" [CALCRECT/measure]" : L" [DRAW -> suppressed]",
+           rc ? rc->left : 0, rc ? rc->top : 0, rc ? rc->right : 0,
+           rc ? rc->bottom : 0, text);
+    return !calc;
+}
+
 using DrawTextW_t = int(WINAPI*)(HDC, LPCWSTR, int, LPRECT, UINT);
 DrawTextW_t DrawTextW_orig;
 int WINAPI DrawTextW_hook(HDC hdc, LPCWSTR text, int cch, LPRECT rc, UINT fmt)
 {
-    if (DropIfWatermark(L"DrawTextW", text, cch))
+    if (ShouldSuppressDraw(L"DrawTextW", text, cch, fmt, rc))
         return 0;
     return DrawTextW_orig(hdc, text, cch, rc, fmt);
 }
@@ -111,7 +126,7 @@ DrawTextExW_t DrawTextExW_orig;
 int WINAPI DrawTextExW_hook(HDC hdc, LPWSTR text, int cch, LPRECT rc, UINT fmt,
                             LPDRAWTEXTPARAMS dtp)
 {
-    if (DropIfWatermark(L"DrawTextExW", text, cch))
+    if (ShouldSuppressDraw(L"DrawTextExW", text, cch, fmt, rc))
         return 0;
     return DrawTextExW_orig(hdc, text, cch, rc, fmt, dtp);
 }
