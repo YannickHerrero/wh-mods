@@ -2,11 +2,11 @@
 // @id              hide-activate-windows-watermark
 // @name            Hide Activate Windows Watermark
 // @description     Hides the "Activate Windows" desktop watermark
-// @version         1.11.0
+// @version         1.11.1
 // @author          yh
 // @include         explorer.exe
 // @architecture    x86-64
-// @compilerOptions -luxtheme
+// @compilerOptions -luxtheme -lgdi32
 // ==/WindhawkMod==
 
 // ==WindhawkModReadme==
