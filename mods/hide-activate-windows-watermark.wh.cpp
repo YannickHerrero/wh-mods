@@ -2,7 +2,7 @@
 // @id              hide-activate-windows-watermark
 // @name            Hide Activate Windows Watermark
 // @description     Hides the "Activate Windows" desktop watermark
-// @version         1.1.0
+// @version         1.2.0
 // @author          yh
 // @include         explorer.exe
 // @architecture    x86-64
@@ -57,6 +57,63 @@ void __cdecl CDesktopWatermark_s_DesktopBuildPaint_hook(HDC, LPCRECT, HFONT)
     // (activation / evaluation / test-mode) from being drawn.
 }
 
+// --- Diagnostics --------------------------------------------------------
+// Logs the Windows build number and dumps every shell32 symbol whose name
+// mentions the watermark, so we can see the real symbol names on this build.
+
+void LogWindowsBuild(void)
+{
+    HMODULE hNtdll = GetModuleHandleW(L"ntdll.dll");
+    if (!hNtdll)
+    {
+        Wh_Log(L"Build: ntdll not found");
+        return;
+    }
+
+    auto pRtlGetNtVersionNumbers =
+        (void(WINAPI*)(DWORD*, DWORD*, DWORD*))
+        GetProcAddress(hNtdll, "RtlGetNtVersionNumbers");
+    if (!pRtlGetNtVersionNumbers)
+    {
+        Wh_Log(L"Build: RtlGetNtVersionNumbers not found");
+        return;
+    }
+
+    DWORD major = 0, minor = 0, build = 0;
+    pRtlGetNtVersionNumbers(&major, &minor, &build);
+    build &= 0x0FFFFFFF;
+    Wh_Log(L"Windows version: %u.%u build %u", major, minor, build);
+}
+
+void DumpWatermarkSymbols(HMODULE hShell32)
+{
+    Wh_Log(L"--- Dumping shell32 symbols mentioning 'Watermark' / 'Activate' ---");
+
+    WH_FIND_SYMBOL findData;
+    HANDLE symSearch = Wh_FindFirstSymbol(hShell32, nullptr, &findData);
+    if (!symSearch)
+    {
+        Wh_Log(L"Wh_FindFirstSymbol failed (symbols not available?)");
+        return;
+    }
+
+    int count = 0;
+    do
+    {
+        if (findData.symbol &&
+            (wcsstr(findData.symbol, L"Watermark") ||
+             wcsstr(findData.symbol, L"Activate") ||
+             wcsstr(findData.symbol, L"DesktopBuild")))
+        {
+            Wh_Log(L"SYM: %s", findData.symbol);
+            count++;
+        }
+    } while (Wh_FindNextSymbol(symSearch, &findData));
+
+    Wh_FindCloseSymbol(symSearch);
+    Wh_Log(L"--- Done, %d matching symbol(s) ---", count);
+}
+
 BOOL Wh_ModInit(void)
 {
     Wh_Log(L"Init");
@@ -67,6 +124,9 @@ BOOL Wh_ModInit(void)
         Wh_Log(L"Failed to load shell32.dll");
         return FALSE;
     }
+
+    LogWindowsBuild();
+    DumpWatermarkSymbols(hShell32);
 
     const WindhawkUtils::SYMBOL_HOOK wantWatermarkHook[] = {
         {
