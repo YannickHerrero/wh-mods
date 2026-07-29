@@ -2,7 +2,7 @@
 // @id              hide-activate-windows-watermark
 // @name            Hide Activate Windows Watermark
 // @description     Hides the "Activate Windows" desktop watermark
-// @version         1.7.0
+// @version         1.8.0
 // @author          yh
 // @include         explorer.exe
 // @architecture    x86-64
@@ -16,20 +16,19 @@
 Hides the "Activate Windows — Go to Settings to activate Windows" watermark that
 Windows draws in the bottom-right of the desktop on unactivated installs.
 
-On current Windows 11 the watermark is drawn by
-`CWallpaperRenderer::PaintMonitor()` in `shell32.dll`. This mod wraps that
-function and, while it runs, suppresses the text-drawing calls it makes
-(GDI `DrawTextW`/`ExtTextOutW`/... and the themed `DrawTextWithGlow` /
-`DrawThemeTextEx`). The only text `PaintMonitor` draws is the watermark, so the
-wallpaper is left untouched. `DrawTextWithGlow` is also logged globally because
-it is used almost exclusively for this watermark.
+This build intercepts the text-drawing functions (`DrawTextW`, `DrawTextExW`,
+`ExtTextOutW`, `TextOutW`, `DrawTextWithGlow`, `DrawThemeText`,
+`DrawThemeTextEx`) and drops any draw whose text is the watermark (matched by
+content: it contains "activate windows"). Matching by content — rather than by
+which function or code path draws it — makes it robust across the various ways
+Windows renders the watermark, and avoids touching any other text.
 
-Every intercepted draw is logged with its text, so the mod log shows exactly
-what was hidden and which draw primitive produced it.
+Every dropped draw is logged with its text.
 
-**Important:** The watermark repaints only when its screen region is
-invalidated. After enabling the mod, force a repaint — drag a window over the
-bottom-right corner and away, or click the desktop and press F5.
+**Important:** The watermark repaints only when its region is invalidated. After
+enabling the mod, force a repaint — drag a window over the bottom-right corner
+and away, or click the desktop and press F5. If it persists, changing the screen
+resolution (and back) forces Windows to rebuild it.
 
 **Note:** This only hides the on-screen notice — it does not activate Windows.
 */
@@ -38,25 +37,50 @@ bottom-right corner and away, or click the desktop and press F5.
 #include <windhawk_utils.h>
 #include <uxtheme.h>
 
-// Set while CWallpaperRenderer::PaintMonitor runs on this thread.
-thread_local int g_inPaintMonitor = 0;
-
-void LogDraw(PCWSTR fn, PCWSTR text, int len)
+// True if the text contains the watermark phrase "activate windows"
+// (case-insensitive), which appears in both watermark lines:
+//   "Activate Windows"
+//   "Go to Settings to activate Windows"
+static bool IsWatermarkText(PCWSTR text, int len)
 {
-    const wchar_t* scope = g_inPaintMonitor > 0 ? L" [in PaintMonitor]" : L"";
     if (!text)
+        return false;
+    if (len < 0)
+        len = lstrlenW(text);
+
+    static const wchar_t needle[] = L"activate windows";
+    const int nlen = (int)(ARRAYSIZE(needle) - 1);
+
+    for (int i = 0; i + nlen <= len; i++)
     {
-        Wh_Log(L"%s%s: (null text)", fn, scope);
-        return;
+        int j = 0;
+        for (; j < nlen; j++)
+        {
+            wchar_t c = text[i + j];
+            if (c >= L'A' && c <= L'Z')
+                c = (wchar_t)(c + 32);
+            if (c != needle[j])
+                break;
+        }
+        if (j == nlen)
+            return true;
     }
+    return false;
+}
+
+static bool DropIfWatermark(PCWSTR fn, PCWSTR text, int len)
+{
+    if (!IsWatermarkText(text, len))
+        return false;
     if (len < 0)
         len = lstrlenW(text);
     if (len > 200)
         len = 200;
-    Wh_Log(L"%s%s: \"%.*s\"", fn, scope, len, text);
+    Wh_Log(L"%s -> DROPPED watermark: \"%.*s\"", fn, len, text);
+    return true;
 }
 
-// ---- CWallpaperRenderer::PaintMonitor -----------------------------------
+// ---- PaintMonitor (context only) ----------------------------------------
 
 using CWallpaperRenderer_PaintMonitor_t =
     void(__cdecl*)(UINT, HWND, HMONITOR, HMONITOR, HDC, LPCRECT, LPCRECT, LPCRECT);
@@ -67,23 +91,18 @@ void __cdecl CWallpaperRenderer_PaintMonitor_hook(
     LPCRECT a6, LPCRECT a7, LPCRECT a8)
 {
     Wh_Log(L"PaintMonitor ENTER");
-    g_inPaintMonitor++;
     CWallpaperRenderer_PaintMonitor_orig(a1, a2, a3, a4, a5, a6, a7, a8);
-    g_inPaintMonitor--;
     Wh_Log(L"PaintMonitor EXIT");
 }
 
-// ---- GDI text functions (suppressed only inside PaintMonitor) -----------
+// ---- GDI text functions -------------------------------------------------
 
 using DrawTextW_t = int(WINAPI*)(HDC, LPCWSTR, int, LPRECT, UINT);
 DrawTextW_t DrawTextW_orig;
 int WINAPI DrawTextW_hook(HDC hdc, LPCWSTR text, int cch, LPRECT rc, UINT fmt)
 {
-    if (g_inPaintMonitor > 0)
-    {
-        LogDraw(L"DrawTextW", text, cch);
+    if (DropIfWatermark(L"DrawTextW", text, cch))
         return 0;
-    }
     return DrawTextW_orig(hdc, text, cch, rc, fmt);
 }
 
@@ -92,11 +111,8 @@ DrawTextExW_t DrawTextExW_orig;
 int WINAPI DrawTextExW_hook(HDC hdc, LPWSTR text, int cch, LPRECT rc, UINT fmt,
                             LPDRAWTEXTPARAMS dtp)
 {
-    if (g_inPaintMonitor > 0)
-    {
-        LogDraw(L"DrawTextExW", text, cch);
+    if (DropIfWatermark(L"DrawTextExW", text, cch))
         return 0;
-    }
     return DrawTextExW_orig(hdc, text, cch, rc, fmt, dtp);
 }
 
@@ -105,11 +121,8 @@ ExtTextOutW_t ExtTextOutW_orig;
 BOOL WINAPI ExtTextOutW_hook(HDC hdc, int x, int y, UINT opt, const RECT* rc,
                              LPCWSTR str, UINT c, const INT* dx)
 {
-    if (g_inPaintMonitor > 0)
-    {
-        LogDraw(L"ExtTextOutW", str, (int)c);
+    if (DropIfWatermark(L"ExtTextOutW", str, (int)c))
         return TRUE;
-    }
     return ExtTextOutW_orig(hdc, x, y, opt, rc, str, c, dx);
 }
 
@@ -117,18 +130,13 @@ using TextOutW_t = BOOL(WINAPI*)(HDC, int, int, LPCWSTR, int);
 TextOutW_t TextOutW_orig;
 BOOL WINAPI TextOutW_hook(HDC hdc, int x, int y, LPCWSTR str, int c)
 {
-    if (g_inPaintMonitor > 0)
-    {
-        LogDraw(L"TextOutW", str, c);
+    if (DropIfWatermark(L"TextOutW", str, c))
         return TRUE;
-    }
     return TextOutW_orig(hdc, x, y, str, c);
 }
 
 // ---- Themed text functions ----------------------------------------------
 
-// uxtheme ordinal 126. Logged globally (it is watermark-specific), suppressed
-// inside PaintMonitor.
 using DrawTextWithGlow_t = HRESULT(WINAPI*)(HDC, LPCWSTR, int, RECT*, DWORD,
                                             COLORREF, COLORREF, UINT, UINT, BOOL,
                                             void*, LPARAM);
@@ -138,11 +146,22 @@ HRESULT WINAPI DrawTextWithGlow_hook(HDC hdc, LPCWSTR text, int cch, RECT* rc,
                                      UINT radius, UINT intensity, BOOL premul,
                                      void* cb, LPARAM lp)
 {
-    LogDraw(L"DrawTextWithGlow", text, cch);
-    if (g_inPaintMonitor > 0)
+    if (DropIfWatermark(L"DrawTextWithGlow", text, cch))
         return S_OK;
     return DrawTextWithGlow_orig(hdc, text, cch, rc, flags, crText, crGlow,
                                  radius, intensity, premul, cb, lp);
+}
+
+using DrawThemeText_t = HRESULT(WINAPI*)(HTHEME, HDC, int, int, LPCWSTR, int,
+                                         DWORD, DWORD, LPCRECT);
+DrawThemeText_t DrawThemeText_orig;
+HRESULT WINAPI DrawThemeText_hook(HTHEME hTheme, HDC hdc, int part, int state,
+                                  LPCWSTR text, int cch, DWORD flags, DWORD flags2,
+                                  LPCRECT rc)
+{
+    if (DropIfWatermark(L"DrawThemeText", text, cch))
+        return S_OK;
+    return DrawThemeText_orig(hTheme, hdc, part, state, text, cch, flags, flags2, rc);
 }
 
 using DrawThemeTextEx_t = HRESULT(WINAPI*)(HTHEME, HDC, int, int, LPCWSTR, int,
@@ -152,11 +171,8 @@ HRESULT WINAPI DrawThemeTextEx_hook(HTHEME hTheme, HDC hdc, int part, int state,
                                     LPCWSTR text, int cch, DWORD flags, LPRECT rc,
                                     const DTTOPTS* opts)
 {
-    if (g_inPaintMonitor > 0)
-    {
-        LogDraw(L"DrawThemeTextEx", text, cch);
+    if (DropIfWatermark(L"DrawThemeTextEx", text, cch))
         return S_OK;
-    }
     return DrawThemeTextEx_orig(hTheme, hdc, part, state, text, cch, flags, rc, opts);
 }
 
@@ -185,19 +201,17 @@ BOOL Wh_ModInit(void)
     HMODULE hUser32 = LoadLibraryW(L"user32.dll");
     HMODULE hGdi32 = LoadLibraryW(L"gdi32.dll");
     HMODULE hUxtheme = LoadLibraryW(L"uxtheme.dll");
-    if (!hShell32)
-    {
-        Wh_Log(L"Failed to load shell32.dll");
-        return FALSE;
-    }
-
-    const WindhawkUtils::SYMBOL_HOOK paintMonitor = {
-        { L"public: void __cdecl CWallpaperRenderer::PaintMonitor(unsigned int,struct HWND__ *,struct HMONITOR__ *,struct HMONITOR__ *,struct HDC__ *,struct tagRECT const *,struct tagRECT const *,struct tagRECT const *)" },
-        &CWallpaperRenderer_PaintMonitor_orig,
-        CWallpaperRenderer_PaintMonitor_hook, false };
 
     int hooked = 0;
-    hooked += HookOne(hShell32, L"CWallpaperRenderer::PaintMonitor", &paintMonitor);
+
+    if (hShell32)
+    {
+        const WindhawkUtils::SYMBOL_HOOK paintMonitor = {
+            { L"public: void __cdecl CWallpaperRenderer::PaintMonitor(unsigned int,struct HWND__ *,struct HMONITOR__ *,struct HMONITOR__ *,struct HDC__ *,struct tagRECT const *,struct tagRECT const *,struct tagRECT const *)" },
+            &CWallpaperRenderer_PaintMonitor_orig,
+            CWallpaperRenderer_PaintMonitor_hook, false };
+        hooked += HookOne(hShell32, L"CWallpaperRenderer::PaintMonitor", &paintMonitor);
+    }
 
     hooked += HookApiPtr(hUser32 ? (void*)GetProcAddress(hUser32, "DrawTextW") : nullptr,
                          L"DrawTextW", (void*)DrawTextW_hook, (void**)&DrawTextW_orig);
@@ -208,15 +222,17 @@ BOOL Wh_ModInit(void)
     hooked += HookApiPtr(hGdi32 ? (void*)GetProcAddress(hGdi32, "TextOutW") : nullptr,
                          L"TextOutW", (void*)TextOutW_hook, (void**)&TextOutW_orig);
 
-    // DrawTextWithGlow is exported by ordinal 126.
     hooked += HookApiPtr(hUxtheme ? (void*)GetProcAddress(hUxtheme, MAKEINTRESOURCEA(126)) : nullptr,
                          L"DrawTextWithGlow", (void*)DrawTextWithGlow_hook,
                          (void**)&DrawTextWithGlow_orig);
+    hooked += HookApiPtr(hUxtheme ? (void*)GetProcAddress(hUxtheme, "DrawThemeText") : nullptr,
+                         L"DrawThemeText", (void*)DrawThemeText_hook,
+                         (void**)&DrawThemeText_orig);
     hooked += HookApiPtr(hUxtheme ? (void*)GetProcAddress(hUxtheme, "DrawThemeTextEx") : nullptr,
                          L"DrawThemeTextEx", (void*)DrawThemeTextEx_hook,
                          (void**)&DrawThemeTextEx_orig);
 
-    Wh_Log(L"Installed %d/7 hooks", hooked);
+    Wh_Log(L"Installed %d/8 hooks", hooked);
 
     if (hooked == 0)
     {
