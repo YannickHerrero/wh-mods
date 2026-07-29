@@ -2,7 +2,7 @@
 // @id              hide-activate-windows-watermark
 // @name            Hide Activate Windows Watermark
 // @description     Hides the "Activate Windows" desktop watermark
-// @version         1.4.0
+// @version         1.5.0
 // @author          yh
 // @include         explorer.exe
 // @architecture    x86-64
@@ -44,6 +44,54 @@ press F5).
 // ==/WindhawkModReadme==
 
 #include <windhawk_utils.h>
+#include <intrin.h>
+
+// Resolve a code address to its module + nearest preceding symbol, so we can
+// see who called into us. Expensive (enumerates a module's symbols), so it is
+// rate-limited by callers.
+static void LogCaller(void* addr, PCWSTR tag)
+{
+    HMODULE hmod = nullptr;
+    if (!GetModuleHandleExW(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            (LPCWSTR)addr, &hmod) ||
+        !hmod)
+    {
+        Wh_Log(L"%s caller: unknown module at %p", tag, addr);
+        return;
+    }
+
+    WCHAR path[MAX_PATH] = {0};
+    GetModuleFileNameW(hmod, path, MAX_PATH);
+    ULONG_PTR rva = (ULONG_PTR)addr - (ULONG_PTR)hmod;
+
+    WCHAR bestName[512] = {0};
+    ULONG_PTR bestDelta = (ULONG_PTR)-1;
+
+    WH_FIND_SYMBOL sym;
+    HANDLE h = Wh_FindFirstSymbol(hmod, nullptr, &sym);
+    if (h)
+    {
+        do
+        {
+            ULONG_PTR symAddr = (ULONG_PTR)sym.address;
+            if (sym.symbol && symAddr && symAddr <= (ULONG_PTR)addr)
+            {
+                ULONG_PTR delta = (ULONG_PTR)addr - symAddr;
+                if (delta < bestDelta)
+                {
+                    bestDelta = delta;
+                    lstrcpynW(bestName, sym.symbol, 512);
+                }
+            }
+        } while (Wh_FindNextSymbol(h, &sym));
+        Wh_FindCloseSymbol(h);
+    }
+
+    Wh_Log(L"%s caller: %s +0x%p  (module %s, rva 0x%p)", tag, bestName,
+           (void*)bestDelta, path, (void*)rva);
+}
 
 // ---- Painters -----------------------------------------------------------
 
@@ -98,9 +146,16 @@ void __cdecl CDesktopWatermark_s_DesktopBuildPaint_hook(HDC, LPCRECT, HFONT)
     Wh_Log(L"HIT CDesktopWatermark::s_DesktopBuildPaint -> suppressed");
 }
 
+int g_gateCallerLogsLeft = 5;
+
 bool __cdecl DoesDesktopHaveWatermarkText_hook(void)
 {
     Wh_Log(L"HIT DoesDesktopHaveWatermarkText -> returning false");
+    if (g_gateCallerLogsLeft > 0)
+    {
+        g_gateCallerLogsLeft--;
+        LogCaller(_ReturnAddress(), L"DoesDesktopHaveWatermarkText");
+    }
     return false;
 }
 
