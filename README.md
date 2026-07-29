@@ -43,6 +43,26 @@ and click **Compile mod** again.
 Toggle the mod off (or delete it) in Windhawk — hooks are removed cleanly on
 unload.
 
+## Troubleshooting
+
+If the watermark is still showing:
+
+1. **Restart Explorer.** The hook affects *painting*, so an already-drawn
+   watermark stays until Explorer repaints. Task Manager → *Windows Explorer* →
+   **Restart**.
+2. **Read the mod log.** In Windhawk, open the mod and view its log output (or
+   capture `explorer.exe` debug output with Sysinternals
+   [DebugView](https://learn.microsoft.com/sysinternals/downloads/debugview),
+   filtering on the mod id). Each hook logs whether it resolved at init
+   (`HookSymbols ...: OK/FAILED`) and when it fires at runtime.
+   - `s_DesktopBuildPaint: FAILED` → the symbol name changed on your build;
+     update the symbol strings in the source.
+   - `s_DesktopBuildPaint ... suppressed` appears but the watermark persists →
+     it's being drawn by a different path on your build; capture your exact
+     Windows build number (`winver`) so the hook can be adjusted.
+3. **Check architecture.** The mod targets `x86-64`. On ARM64 Windows the
+   `@architecture` line must match, or the mod won't inject into Explorer.
+
 ## Development notes
 
 - Mods target `x86-64` and `explorer.exe`.
