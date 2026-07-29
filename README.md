@@ -9,9 +9,11 @@ Personal [Windhawk](https://windhawk.net/) mods.
 Hides the "Activate Windows — Go to Settings to activate Windows" watermark that
 Windows draws in the bottom-right of the desktop on unactivated installs.
 
-It hooks `CDesktopWatermark::s_WantWatermark()` in `shell32.dll` (the gate
-`explorer.exe` checks before painting the watermark) and forces it to return
-`false`, so the watermark is never drawn.
+The function that paints the watermark differs by Windows version, so the mod
+no-ops every known painter in `shell32.dll`: `CWallpaperRenderer::PaintDesktopWatermarkText()`
+(current Windows 11, e.g. 23H2 / build 22631), `CDesktopWatermark::s_DesktopBuildPaint()`
+and the `CDesktopWatermark::s_WantWatermark()` gate (older builds). Missing
+symbols are skipped per build.
 
 > **Note:** This only hides the on-screen notice — it does not activate Windows.
 
