@@ -2,7 +2,7 @@
 // @id              hide-activate-windows-watermark
 // @name            Hide Activate Windows Watermark
 // @description     Hides the "Activate Windows" desktop watermark
-// @version         1.8.0
+// @version         1.9.0
 // @author          yh
 // @include         explorer.exe
 // @architecture    x86-64
@@ -176,6 +176,70 @@ HRESULT WINAPI DrawThemeTextEx_hook(HTHEME hTheme, HDC hdc, int part, int state,
     return DrawThemeTextEx_orig(hTheme, hdc, part, state, text, cch, flags, rc, opts);
 }
 
+// ---- String sources (renderer-agnostic) ---------------------------------
+
+using LoadStringW_t = int(WINAPI*)(HINSTANCE, UINT, LPWSTR, int);
+LoadStringW_t LoadStringW_orig;
+int WINAPI LoadStringW_hook(HINSTANCE hInst, UINT id, LPWSTR buf, int cch)
+{
+    int r = LoadStringW_orig(hInst, id, buf, cch);
+    if (buf && cch > 0 && r > 0 && IsWatermarkText(buf, r))
+    {
+        Wh_Log(L"LoadStringW id=%u -> blanked: \"%.*s\"", id, r > 200 ? 200 : r, buf);
+        buf[0] = L'\0';
+        return 0;
+    }
+    return r;
+}
+
+using SHLoadIndirectString_t = HRESULT(WINAPI*)(PCWSTR, PWSTR, UINT, void**);
+SHLoadIndirectString_t SHLoadIndirectString_orig;
+HRESULT WINAPI SHLoadIndirectString_hook(PCWSTR src, PWSTR out, UINT cch, void** rsv)
+{
+    HRESULT hr = SHLoadIndirectString_orig(src, out, cch, rsv);
+    if (SUCCEEDED(hr) && out && cch > 0 && IsWatermarkText(out, -1))
+    {
+        Wh_Log(L"SHLoadIndirectString -> blanked: \"%s\"", out);
+        out[0] = L'\0';
+    }
+    return hr;
+}
+
+// ---- Window enumeration (is the watermark a separate window?) ------------
+
+static BOOL CALLBACK EnumChildProc(HWND hwnd, LPARAM)
+{
+    WCHAR text[256] = {0};
+    GetWindowTextW(hwnd, text, ARRAYSIZE(text));
+    if (IsWatermarkText(text, -1))
+    {
+        WCHAR cls[128] = {0};
+        GetClassNameW(hwnd, cls, ARRAYSIZE(cls));
+        RECT rc = {0};
+        GetWindowRect(hwnd, &rc);
+        Wh_Log(L"WINDOW MATCH (child) hwnd=%p class=%s rect=(%d,%d,%d,%d) text=\"%s\"",
+               hwnd, cls, rc.left, rc.top, rc.right, rc.bottom, text);
+    }
+    return TRUE;
+}
+
+static BOOL CALLBACK EnumTopProc(HWND hwnd, LPARAM)
+{
+    WCHAR text[256] = {0};
+    GetWindowTextW(hwnd, text, ARRAYSIZE(text));
+    if (IsWatermarkText(text, -1))
+    {
+        WCHAR cls[128] = {0};
+        GetClassNameW(hwnd, cls, ARRAYSIZE(cls));
+        RECT rc = {0};
+        GetWindowRect(hwnd, &rc);
+        Wh_Log(L"WINDOW MATCH (top) hwnd=%p class=%s rect=(%d,%d,%d,%d) text=\"%s\"",
+               hwnd, cls, rc.left, rc.top, rc.right, rc.bottom, text);
+    }
+    EnumChildWindows(hwnd, EnumChildProc, 0);
+    return TRUE;
+}
+
 // ---- Init ---------------------------------------------------------------
 
 static BOOL HookOne(HMODULE mod, PCWSTR label,
@@ -201,6 +265,7 @@ BOOL Wh_ModInit(void)
     HMODULE hUser32 = LoadLibraryW(L"user32.dll");
     HMODULE hGdi32 = LoadLibraryW(L"gdi32.dll");
     HMODULE hUxtheme = LoadLibraryW(L"uxtheme.dll");
+    HMODULE hShlwapi = LoadLibraryW(L"shlwapi.dll");
 
     int hooked = 0;
 
@@ -232,7 +297,17 @@ BOOL Wh_ModInit(void)
                          L"DrawThemeTextEx", (void*)DrawThemeTextEx_hook,
                          (void**)&DrawThemeTextEx_orig);
 
-    Wh_Log(L"Installed %d/8 hooks", hooked);
+    hooked += HookApiPtr(hUser32 ? (void*)GetProcAddress(hUser32, "LoadStringW") : nullptr,
+                         L"LoadStringW", (void*)LoadStringW_hook, (void**)&LoadStringW_orig);
+    hooked += HookApiPtr(hShlwapi ? (void*)GetProcAddress(hShlwapi, "SHLoadIndirectString") : nullptr,
+                         L"SHLoadIndirectString", (void*)SHLoadIndirectString_hook,
+                         (void**)&SHLoadIndirectString_orig);
+
+    Wh_Log(L"Enumerating windows for watermark text...");
+    EnumWindows(EnumTopProc, 0);
+    Wh_Log(L"Window enumeration done");
+
+    Wh_Log(L"Installed %d/10 hooks", hooked);
 
     if (hooked == 0)
     {
