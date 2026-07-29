@@ -9,11 +9,14 @@ Personal [Windhawk](https://windhawk.net/) mods.
 Hides the "Activate Windows — Go to Settings to activate Windows" watermark that
 Windows draws in the bottom-right of the desktop on unactivated installs.
 
-The function that paints the watermark differs by Windows version, so the mod
-no-ops every known painter in `shell32.dll`: `CWallpaperRenderer::PaintDesktopWatermarkText()`
-(current Windows 11, e.g. 23H2 / build 22631), `CDesktopWatermark::s_DesktopBuildPaint()`
-and the `CDesktopWatermark::s_WantWatermark()` gate (older builds). Missing
-symbols are skipped per build.
+On current Windows 11 (e.g. 23H2 / build 22631) the watermark text is rendered
+with `DrawTextExW`. The mod hooks `DrawTextExW`/`DrawTextW` and drops the draw
+when the text is the watermark (it contains "activate windows"), leaving all
+other text untouched. Measurement passes (`DT_CALCRECT`) are left alone so
+layout code isn't disturbed.
+
+The match is on the English watermark text; on a non-English Windows the phrase
+in `IsWatermarkText` would need adjusting.
 
 > **Note:** This only hides the on-screen notice — it does not activate Windows.
 
@@ -49,26 +52,18 @@ unload.
 
 If the watermark is still showing:
 
-1. **Restart Explorer.** The hook affects *painting*, so an already-drawn
-   watermark stays until Explorer repaints. Task Manager → *Windows Explorer* →
-   **Restart**.
-2. **Read the mod log.** In Windhawk, open the mod and view its log output (or
-   capture `explorer.exe` debug output with Sysinternals
-   [DebugView](https://learn.microsoft.com/sysinternals/downloads/debugview),
-   filtering on the mod id). Each hook logs whether it resolved at init
-   (`HookSymbols ...: OK/FAILED`) and when it fires at runtime.
-   - `s_DesktopBuildPaint: FAILED` → the symbol name changed on your build;
-     update the symbol strings in the source.
-   - `s_DesktopBuildPaint ... suppressed` appears but the watermark persists →
-     it's being drawn by a different path on your build; capture your exact
-     Windows build number (`winver`) so the hook can be adjusted.
+1. **Restart Explorer.** The watermark is baked into the composed desktop until
+   Explorer redraws with the mod active. Task Manager → *Windows Explorer* →
+   **Restart**. This is the important step — re-injecting into a running Explorer
+   isn't enough on its own.
+2. **Non-English Windows.** The mod matches the English string "activate
+   windows". For another language, change the phrase in `IsWatermarkText`.
 3. **Check architecture.** The mod targets `x86-64`. On ARM64 Windows the
    `@architecture` line must match, or the mod won't inject into Explorer.
 
 ## Development notes
 
 - Mods target `x86-64` and `explorer.exe`.
-- Symbol hooks are resolved with `WindhawkUtils::HookSymbols` from
-  `<windhawk_utils.h>`, which caches symbols across Windows builds. If a future
-  Windows update moves or renames the hooked function, the symbol string in the
-  source may need updating.
+- The watermark is matched by its **text content** rather than by a specific
+  paint function, so it keeps working regardless of which internal code path or
+  DC (on 23H2 it's rendered into an offscreen memory DC) produces it.
