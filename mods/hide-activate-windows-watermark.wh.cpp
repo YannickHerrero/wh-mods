@@ -36,6 +36,7 @@ bottom-right corner and away, or click the desktop and press F5.
 // ==/WindhawkModReadme==
 
 #include <windhawk_utils.h>
+#include <uxtheme.h>
 
 // Set while CWallpaperRenderer::PaintMonitor runs on this thread.
 thread_local int g_inPaintMonitor = 0;
