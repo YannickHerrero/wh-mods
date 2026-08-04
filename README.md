@@ -50,15 +50,25 @@ unload.
 
 ## Troubleshooting
 
-If the watermark is still showing:
+The mod logs a few lines at load: the Windows build number and whether each hook
+installed (`Hook DrawTextExW: OK/FAILED`). View them in Windhawk's mod log or via
+Sysinternals [DebugView](https://learn.microsoft.com/sysinternals/downloads/debugview).
+
+If the watermark is showing:
 
 1. **Restart Explorer.** The watermark is baked into the composed desktop until
    Explorer redraws with the mod active. Task Manager -> *Windows Explorer* ->
-   **Restart**. This is the important step - re-injecting into a running Explorer
-   isn't enough on its own.
-2. **Non-English Windows.** The mod matches the English string "activate
+   **Restart**.
+2. **Mod loaded but watermark back after an Explorer restart** (hooks log `OK`,
+   build number unchanged) -> Windhawk sometimes fails to apply the hook to a
+   freshly restarted Explorer. **Recompile the mod** (or toggle it off/on) to
+   force a clean re-hook, then restart Explorer. This is an injection hiccup, not
+   a code problem.
+3. **A hook logs `FAILED`, or the build number changed** -> a Windows update
+   likely moved the watermark render path; the mod needs re-targeting.
+4. **Non-English Windows.** The mod matches the English string "activate
    windows". For another language, change the phrase in `IsWatermarkText`.
-3. **Check architecture.** The mod targets `x86-64`. On ARM64 Windows the
+5. **Check architecture.** The mod targets `x86-64`. On ARM64 Windows the
    `@architecture` line must match, or the mod won't inject into Explorer.
 
 ## Development notes

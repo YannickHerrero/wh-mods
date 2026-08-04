@@ -2,39 +2,60 @@
 // @id              hide-activate-windows-watermark
 // @name            Hide Activate Windows Watermark
 // @description     Hides the "Activate Windows" desktop watermark
-// @version         2.1.0-diag
+// @version         2.1.0
 // @author          yh
 // @include         explorer.exe
 // @architecture    x86-64
-// @compilerOptions -luxtheme
 // ==/WindhawkMod==
 
 // ==WindhawkModReadme==
 /*
-# Hide Activate Windows Watermark (diagnostic build)
+# Hide Activate Windows Watermark
 
-Temporary diagnostic build. It still suppresses the watermark (English text
-containing "activate windows"), but also LOGS the Windows build number, whether
-each hook installs, and any text draw whose content contains "activate" - so we
-can see if a Windows update changed the watermark wording or moved its render
-path off DrawTextExW.
+Hides the "Activate Windows - Go to Settings to activate Windows" watermark that
+Windows draws in the bottom-right of the desktop on unactivated installs.
 
-Logging is capped (about 60 lines) so it does not flood.
+On current Windows 11 (e.g. 23H2 / build 22631) the watermark text is rendered
+with `DrawTextExW`. This mod hooks `DrawTextExW`/`DrawTextW` and drops the draw
+when the text is the watermark (it contains "activate windows"), leaving all
+other text untouched. Measurement passes (`DT_CALCRECT`) are left alone so
+layout code isn't disturbed.
+
+The match is on the English watermark text; on a non-English Windows the phrase
+in `IsWatermarkText` below would need to be adjusted.
+
+At load the mod logs the Windows build number and whether each hook installed.
+These one-time lines make it easy to diagnose if the mod ever stops working:
+
+- Hooks show `OK` and the build number is unchanged, but the watermark is back
+  -> Windhawk failed to apply the hook to that Explorer instance. Recompile the
+  mod (or toggle it off/on) to force a clean re-hook, then restart Explorer.
+- A hook shows `FAILED`, or the build number changed -> a Windows update likely
+  moved the render path and the mod needs re-targeting.
+
+**Note:** This only hides the on-screen notice - it does not activate Windows.
+
+To apply it, enable the mod and restart Windows Explorer (Task Manager ->
+*Windows Explorer* -> Restart) so the desktop is composed with the mod active.
 */
 // ==/WindhawkModReadme==
 
 #include <windhawk_utils.h>
-#include <uxtheme.h>
 
-int g_logLeft = 60;
-
-// Case-insensitive ASCII substring search. needleLower must be lowercase.
-static bool ContainsCI(PCWSTR text, int len, const wchar_t* needleLower, int nlen)
+// True if the text contains the watermark phrase "activate windows"
+// (case-insensitive). Present in both watermark lines:
+//   "Activate Windows"
+//   "Go to Settings to activate Windows"
+static bool IsWatermarkText(PCWSTR text, int len)
 {
     if (!text)
         return false;
     if (len < 0)
         len = lstrlenW(text);
+
+    static const wchar_t needle[] = L"activate windows";
+    const int nlen = (int)(ARRAYSIZE(needle) - 1);
+
     for (int i = 0; i + nlen <= len; i++)
     {
         int j = 0;
@@ -43,7 +64,7 @@ static bool ContainsCI(PCWSTR text, int len, const wchar_t* needleLower, int nle
             wchar_t c = text[i + j];
             if (c >= L'A' && c <= L'Z')
                 c = (wchar_t)(c + 32);
-            if (c != needleLower[j])
+            if (c != needle[j])
                 break;
         }
         if (j == nlen)
@@ -52,39 +73,18 @@ static bool ContainsCI(PCWSTR text, int len, const wchar_t* needleLower, int nle
     return false;
 }
 
-// Broad match for diagnostics: any text mentioning "activate".
-static bool IsActivate(PCWSTR text, int len)
+// Suppress only the actual draw; let DT_CALCRECT measurement pass through.
+static bool ShouldDrop(PCWSTR text, int len, UINT fmt)
 {
-    return ContainsCI(text, len, L"activate", 8);
+    return !(fmt & DT_CALCRECT) && IsWatermarkText(text, len);
 }
-
-// Strict match used for actual suppression.
-static bool IsWatermark(PCWSTR text, int len)
-{
-    return ContainsCI(text, len, L"activate windows", 16);
-}
-
-static void MaybeLog(PCWSTR fn, PCWSTR text, int len, UINT fmt)
-{
-    if (g_logLeft <= 0 || !IsActivate(text, len))
-        return;
-    g_logLeft--;
-    if (len < 0)
-        len = lstrlenW(text);
-    if (len > 160)
-        len = 160;
-    Wh_Log(L"%s: fmt=0x%X text=\"%.*s\"", fn, fmt, len, text);
-}
-
-// ---- Hooked text renderers ----------------------------------------------
 
 using DrawTextExW_t = int(WINAPI*)(HDC, LPWSTR, int, LPRECT, UINT, LPDRAWTEXTPARAMS);
 DrawTextExW_t DrawTextExW_orig;
 int WINAPI DrawTextExW_hook(HDC hdc, LPWSTR text, int cch, LPRECT rc, UINT fmt,
                             LPDRAWTEXTPARAMS dtp)
 {
-    MaybeLog(L"DrawTextExW", text, cch, fmt);
-    if (!(fmt & DT_CALCRECT) && IsWatermark(text, cch))
+    if (ShouldDrop(text, cch, fmt))
         return 0;
     return DrawTextExW_orig(hdc, text, cch, rc, fmt, dtp);
 }
@@ -93,53 +93,10 @@ using DrawTextW_t = int(WINAPI*)(HDC, LPCWSTR, int, LPRECT, UINT);
 DrawTextW_t DrawTextW_orig;
 int WINAPI DrawTextW_hook(HDC hdc, LPCWSTR text, int cch, LPRECT rc, UINT fmt)
 {
-    MaybeLog(L"DrawTextW", text, cch, fmt);
-    if (!(fmt & DT_CALCRECT) && IsWatermark(text, cch))
+    if (ShouldDrop(text, cch, fmt))
         return 0;
     return DrawTextW_orig(hdc, text, cch, rc, fmt);
 }
-
-using ExtTextOutW_t = BOOL(WINAPI*)(HDC, int, int, UINT, const RECT*, LPCWSTR, UINT, const INT*);
-ExtTextOutW_t ExtTextOutW_orig;
-BOOL WINAPI ExtTextOutW_hook(HDC hdc, int x, int y, UINT opt, const RECT* rc,
-                             LPCWSTR str, UINT c, const INT* dx)
-{
-    MaybeLog(L"ExtTextOutW", str, (int)c, 0);
-    if (IsWatermark(str, (int)c))
-        return TRUE;
-    return ExtTextOutW_orig(hdc, x, y, opt, rc, str, c, dx);
-}
-
-using DrawTextWithGlow_t = HRESULT(WINAPI*)(HDC, LPCWSTR, int, RECT*, DWORD,
-                                            COLORREF, COLORREF, UINT, UINT, BOOL,
-                                            void*, LPARAM);
-DrawTextWithGlow_t DrawTextWithGlow_orig;
-HRESULT WINAPI DrawTextWithGlow_hook(HDC hdc, LPCWSTR text, int cch, RECT* rc,
-                                     DWORD flags, COLORREF crText, COLORREF crGlow,
-                                     UINT radius, UINT intensity, BOOL premul,
-                                     void* cb, LPARAM lp)
-{
-    MaybeLog(L"DrawTextWithGlow", text, cch, 0);
-    if (IsWatermark(text, cch))
-        return S_OK;
-    return DrawTextWithGlow_orig(hdc, text, cch, rc, flags, crText, crGlow,
-                                 radius, intensity, premul, cb, lp);
-}
-
-using DrawThemeTextEx_t = HRESULT(WINAPI*)(HTHEME, HDC, int, int, LPCWSTR, int,
-                                           DWORD, LPRECT, const DTTOPTS*);
-DrawThemeTextEx_t DrawThemeTextEx_orig;
-HRESULT WINAPI DrawThemeTextEx_hook(HTHEME hTheme, HDC hdc, int part, int state,
-                                    LPCWSTR text, int cch, DWORD flags, LPRECT rc,
-                                    const DTTOPTS* opts)
-{
-    MaybeLog(L"DrawThemeTextEx", text, cch, flags);
-    if (IsWatermark(text, cch))
-        return S_OK;
-    return DrawThemeTextEx_orig(hTheme, hdc, part, state, text, cch, flags, rc, opts);
-}
-
-// ---- Init ---------------------------------------------------------------
 
 static void LogWindowsBuild(void)
 {
@@ -157,36 +114,30 @@ static void LogWindowsBuild(void)
     Wh_Log(L"Windows version: %u.%u build %u", major, minor, build & 0x0FFFFFFF);
 }
 
-static BOOL HookApi(PCWSTR dll, PCSTR name, void* hook, void** orig)
-{
-    HMODULE mod = LoadLibraryW(dll);
-    void* target = mod ? (void*)GetProcAddress(mod, name) : nullptr;
-    BOOL ok = target && Wh_SetFunctionHook(target, hook, orig);
-    Wh_Log(L"Hook %S: %s", name, ok ? L"OK" : L"FAILED");
-    return ok;
-}
-
 BOOL Wh_ModInit(void)
 {
-    Wh_Log(L"Init (diagnostic build)");
+    Wh_Log(L"Init");
     LogWindowsBuild();
 
-    int hooked = 0;
-    hooked += HookApi(L"user32.dll", "DrawTextExW", (void*)DrawTextExW_hook, (void**)&DrawTextExW_orig);
-    hooked += HookApi(L"user32.dll", "DrawTextW", (void*)DrawTextW_hook, (void**)&DrawTextW_orig);
-    hooked += HookApi(L"gdi32.dll", "ExtTextOutW", (void*)ExtTextOutW_hook, (void**)&ExtTextOutW_orig);
-
-    HMODULE hUx = LoadLibraryW(L"uxtheme.dll");
-    hooked += HookApi(L"uxtheme.dll", "DrawThemeTextEx", (void*)DrawThemeTextEx_hook, (void**)&DrawThemeTextEx_orig);
-    // DrawTextWithGlow is exported by ordinal 126.
+    HMODULE hUser32 = LoadLibraryW(L"user32.dll");
+    if (!hUser32)
     {
-        void* target = hUx ? (void*)GetProcAddress(hUx, MAKEINTRESOURCEA(126)) : nullptr;
-        BOOL ok = target && Wh_SetFunctionHook(target, (void*)DrawTextWithGlow_hook,
-                                               (void**)&DrawTextWithGlow_orig);
-        Wh_Log(L"Hook DrawTextWithGlow: %s", ok ? L"OK" : L"FAILED");
-        hooked += ok;
+        Wh_Log(L"Failed to load user32.dll");
+        return FALSE;
     }
 
-    Wh_Log(L"Installed %d/5 hooks", hooked);
-    return hooked > 0;
+    BOOL exOk = FALSE, wOk = FALSE;
+    void* pDrawTextExW = (void*)GetProcAddress(hUser32, "DrawTextExW");
+    if (pDrawTextExW)
+        exOk = Wh_SetFunctionHook(pDrawTextExW, (void*)DrawTextExW_hook,
+                                  (void**)&DrawTextExW_orig);
+    Wh_Log(L"Hook DrawTextExW: %s", exOk ? L"OK" : L"FAILED");
+
+    void* pDrawTextW = (void*)GetProcAddress(hUser32, "DrawTextW");
+    if (pDrawTextW)
+        wOk = Wh_SetFunctionHook(pDrawTextW, (void*)DrawTextW_hook,
+                                 (void**)&DrawTextW_orig);
+    Wh_Log(L"Hook DrawTextW: %s", wOk ? L"OK" : L"FAILED");
+
+    return exOk || wOk;
 }
